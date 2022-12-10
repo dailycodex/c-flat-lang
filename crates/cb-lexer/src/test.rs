@@ -1,4 +1,4 @@
-use super::{Scanner, Token};
+use super::{Scanner, Token, TokenDebug};
 use Token::*;
 
 fn get_next<'a>(scanner: &mut Scanner, src: &'a str) -> Option<(Token, &'a str)> {
@@ -10,7 +10,7 @@ macro_rules! setup_test {
         #[test]
         fn $name() {
             let src = $input;
-            let mut scanner = Scanner::new(src);
+            let mut scanner = Scanner::new(src, TokenDebug::True);
             $(
                 assert_eq!(
                     get_next(&mut scanner, src),

@@ -20,6 +20,7 @@ pub enum Token {
     Char(String),
     Op(String),
     KeyWord(String),
+    Error(String),
     Eof,
 }
 
@@ -33,6 +34,7 @@ impl fmt::Display for Token {
             Self::Char(c) => write!(f, "{}", c),
             Self::Op(o) => write!(f, "{}", o),
             Self::KeyWord(kw) => write!(f, "{}", kw),
+            Self::Error(e) => write!(f, "unknown token: '{e}'"),
             Self::Eof => write!(f, "EOF"),
         }
     }

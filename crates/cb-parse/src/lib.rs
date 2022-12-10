@@ -1,18 +1,48 @@
-use cb_lexer::{Scanner, Span, Token};
+use cb_lexer::{Scanner, Span, Token, TokenDebug};
 use std::fmt;
 use std::iter::Peekable;
 
 type CResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+pub enum ParseDebug {
+    True,
+    False,
+}
+
+impl From<bool> for ParseDebug {
+    fn from(b: bool) -> Self {
+        if b {
+            return Self::True;
+        }
+        Self::False
+    }
+}
+
+pub fn parse(src: &str, scan_debug: TokenDebug, parse_debug: ParseDebug) -> CResult<Vec<Expr>> {
+    let lexer = Scanner::new(src, scan_debug);
+    let mut parser = Parser::new(lexer.peekable());
+    let ast = parser.parse();
+    if let ParseDebug::True = parse_debug {
+        dbg!(&ast);
+    }
+    ast
+}
+
 #[derive(Debug)]
 enum ParserError {
     BadToken(Option<(Token, Span)>),
+    Expected(Token, (Token, Span)),
 }
 impl fmt::Display for ParserError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadToken(Some((t, s))) => write!(f, "{}:{} {t:?}", s.start, s.end),
             Self::BadToken(None) => write!(f, "BadToken::None"),
+            Self::Expected(expected, (found, s)) => write!(
+                f,
+                "{}:{} expected '{expected:?}' but found '{found:?}",
+                s.start, s.end
+            ),
         }
     }
 }
@@ -62,6 +92,8 @@ pub enum Op {
     Plus,
     Mult,
     Div,
+    Grt,
+    Les,
 }
 
 impl fmt::Display for Op {
@@ -71,6 +103,8 @@ impl fmt::Display for Op {
             Self::Plus => write!(f, "+"),
             Self::Mult => write!(f, "*"),
             Self::Div => write!(f, "/"),
+            Self::Grt => write!(f, ">"),
+            Self::Les => write!(f, "<"),
         }
     }
 }
@@ -93,6 +127,8 @@ impl TryFrom<&str> for Op {
             "+" => Ok(Self::Plus),
             "*" => Ok(Self::Mult),
             "/" => Ok(Self::Div),
+            ">" => Ok(Self::Grt),
+            "<" => Ok(Self::Les),
             _ => Err("not an operator"),
         }
     }
@@ -108,12 +144,14 @@ impl TryFrom<&String> for Op {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Atom {
     Int(i32),
+    Id(String),
 }
 
 impl fmt::Display for Atom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Int(i) => write!(f, "{i}"),
+            Self::Id(i) => write!(f, "{i}"),
         }
     }
 }
@@ -123,6 +161,8 @@ pub enum Expr {
     Atom(Atom),
     Unary(Op, Box<Self>),
     Binary(Op, Box<Self>, Box<Self>),
+    If(Box<Self>, Box<Self>),
+    IfElse(Box<Self>, Box<Self>, Box<Self>),
 }
 
 impl fmt::Display for Expr {
@@ -131,14 +171,10 @@ impl fmt::Display for Expr {
             Self::Atom(i) => write!(f, "{i}"),
             Self::Unary(op, expr) => write!(f, "({op} {expr})"),
             Self::Binary(op, lhs, rhs) => write!(f, "({op} {lhs} {rhs})"),
+            Self::If(c, b) => write!(f, "(if ({c}) ({b}))"),
+            Self::IfElse(c, b1, b2) => write!(f, "(if ({c}) then ({b1}) else ({b2}))"),
         }
     }
-}
-
-pub fn parse(src: &str) -> CResult<Vec<Expr>> {
-    let lexer = Scanner::new(src);
-    let mut parser = Parser::new(lexer.peekable());
-    parser.parse()
 }
 
 struct Parser<'a> {
@@ -151,16 +187,69 @@ impl<'a> Parser<'a> {
     }
 
     fn is_end(&mut self) -> bool {
-        self.lexer.peek().map(|_| false).unwrap_or(true)
+        matches!(self.lexer.peek().unwrap(), (Token::Eof, _))
+    }
+
+    fn check(&mut self, expected: Token) -> bool {
+        self.peek() == expected
+    }
+
+    fn consume(&mut self, expected: Token) -> CResult<Span> {
+        if self.peek() == expected {
+            return Ok(self.lexer.next().map(|(_, s)| s).unwrap());
+        }
+        let found = self.lexer.peek().unwrap().clone();
+        Err(Box::new(ParserError::Expected(expected, found)))
+    }
+
+    fn peek(&mut self) -> Token {
+        self.lexer
+            .peek()
+            .map(|(t, _)| t.clone())
+            .unwrap_or(Token::Eof)
     }
 
     fn program(&mut self) -> CResult<Expr> {
+        self.if_statement()
+    }
+
+    fn if_statement(&mut self) -> CResult<Expr> {
+        if self.check(Token::KeyWord("if".into())) {
+            let span = self.consume(Token::KeyWord("if".into()))?;
+            let condition = self.expression(Precedence::None)?;
+            self.consume(Token::Op("{".into()))?;
+            let branch = self.if_statement()?;
+            self.consume(Token::Op("}".into()))?;
+            if self.check(Token::KeyWord("else".into())) {
+                return self.if_else_statement(span, condition, branch);
+            }
+            let expr = Expr::If(Box::new(condition), Box::new(branch));
+            return Ok(expr);
+        }
         self.expression(Precedence::None)
     }
 
+    fn if_else_statement(&mut self, _span: Span, condition: Expr, branch1: Expr) -> CResult<Expr> {
+        self.consume(Token::KeyWord("else".into()))?;
+        let branch2 = if self.check(Token::KeyWord("if".into())) {
+            self.if_statement()?
+        } else {
+            self.consume(Token::Op("{".into()))?;
+            let branch2 = self.if_statement()?;
+            self.consume(Token::Op("}".into()))?;
+            branch2
+        };
+        Ok(Expr::IfElse(
+            Box::new(condition),
+            Box::new(branch1),
+            Box::new(branch2),
+        ))
+    }
+
     fn expression(&mut self, min_bp: Precedence) -> CResult<Expr> {
-        let mut lhs = match dbg!(self.lexer.next()) {
+        let mut lhs = match self.lexer.next() {
             Some((Token::Int(a), _)) => Expr::Atom(Atom::Int(a.parse().unwrap())),
+            Some((Token::Id(id), _)) => Expr::Atom(Atom::Id(id.into())),
             Some((Token::Op(ref op), _)) if op == "(" => {
                 let lhs = self.expression(Precedence::None)?;
                 self.lexer.next();
@@ -174,19 +263,20 @@ impl<'a> Parser<'a> {
             t => return Err(Box::new(ParserError::BadToken(t))),
         };
         loop {
-            let Some((token, _)) = self.lexer.next() else {
-                break;
-            };
+            let Some((token, _)) = self.lexer.peek() else {
+                    break;
+                };
             let bp = Precedence::from(token.clone());
             let op = match Op::try_from(token.clone()) {
                 Ok(o) => o,
                 Err(_) => break,
             };
-            if bp < min_bp {
+            if bp <= min_bp {
                 break;
             }
+            self.lexer.next();
             match bp {
-                Precedence::Term | Precedence::Factor => {
+                Precedence::Term | Precedence::Factor | Precedence::Comparison => {
                     let rhs = self.expression(bp)?;
                     lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
                 }
@@ -209,6 +299,9 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn tparse(src: &str) -> Vec<Expr> {
+        parse(src, TokenDebug::True, ParseDebug::True).unwrap_or(vec![])
+    }
 
     fn into_string<E: fmt::Display>(i: &mut impl Iterator<Item = E>) -> String {
         i.next().map(|t| t.to_string()).unwrap_or("".into())
@@ -216,33 +309,58 @@ mod tests {
 
     #[test]
     fn expressions() {
-        let exprs = parse("1").unwrap_or(vec![]);
+        let exprs = tparse("1");
         let mut exprs = exprs.iter();
         assert_eq!(into_string(&mut exprs), "1");
     }
 
     #[test]
     fn change_precedence() {
-        let exprs = parse("(1)").unwrap_or(vec![]);
+        let exprs = tparse("(1)");
         let mut exprs = exprs.iter();
         assert_eq!(into_string(&mut exprs), "1");
     }
 
     #[test]
     fn unary() {
-        let exprs = parse("-1").unwrap_or(vec![]);
+        let exprs = tparse("-1");
         let mut exprs = exprs.iter();
         assert_eq!(into_string(&mut exprs), "(- 1)");
     }
 
     #[test]
     fn binary() {
-        let exprs = parse("1 + 1").unwrap_or(vec![]);
+        let exprs = tparse("1 + 1");
         let mut exprs = exprs.iter();
         assert_eq!(into_string(&mut exprs), "(+ 1 1)");
 
-        let exprs = parse("1 + 2 * 3").unwrap_or(vec![]);
+        let exprs = tparse("1 + 2 * 3");
         let mut exprs = exprs.iter();
         assert_eq!(into_string(&mut exprs), "(+ 1 (* 2 3))");
+
+        let exprs = tparse("1 > 2");
+        let mut exprs = exprs.iter();
+        assert_eq!(into_string(&mut exprs), "(> 1 2)");
+    }
+
+    #[test]
+    fn if_statement() {
+        let exprs = tparse("if 1 > 3 { a + b }");
+        let mut exprs = exprs.iter();
+        assert_eq!(into_string(&mut exprs), "(if ((> 1 3)) ((+ a b)))");
+    }
+
+    #[test]
+    fn if_else_statement() {
+        let exprs = tparse("if x > y { x } else { y }");
+        let mut exprs = exprs.iter();
+        assert_eq!(into_string(&mut exprs), "(if ((> x y)) then (x) else (y))");
+
+        let exprs = tparse("if x > y { x } else if x < y { y + y } else { y }");
+        let mut exprs = exprs.iter();
+        assert_eq!(
+            into_string(&mut exprs),
+            "(if ((> x y)) then (x) else ((if ((< x y)) then ((+ y y)) else (y))))"
+        );
     }
 }

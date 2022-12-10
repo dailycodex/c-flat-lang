@@ -1,4 +1,4 @@
-use super::{Span, Token};
+use super::{Span, Token, TokenDebug};
 use std::{iter::Peekable, str::Chars};
 type Stream<'a> = Peekable<Chars<'a>>;
 
@@ -7,15 +7,17 @@ pub struct Scanner<'a> {
     span: Span,
     current: Option<char>,
     previous: Option<char>,
+    token_debug: TokenDebug,
 }
 
 impl<'a> Scanner<'a> {
-    pub fn new(src: &'a str) -> Self {
+    pub fn new(src: &'a str, token_debug: TokenDebug) -> Self {
         Self {
             stream: src.chars().peekable(),
             span: 0..0,
             current: None,
             previous: None,
+            token_debug,
         }
     }
     fn advance(&mut self) {
@@ -111,9 +113,14 @@ impl<'a> Iterator for Scanner<'a> {
     type Item = (Token, Span);
     fn next(&mut self) -> Option<Self::Item> {
         let Some(ch) = self.next_char() else {
-            return None;
+            let token = Some((Token::Eof, self.span()));
+            if let TokenDebug::True = self.token_debug {
+                let t = &token.clone().unwrap();
+                eprintln!("{t:?}");
+            }
+            return token;
         };
-        match ch {
+        let token = match ch {
             num if num.is_ascii_digit() => Some(self.number()),
             ident if ident.is_ascii_alphabetic() => Some(self.id()),
             '-' if self.matched('>') => Some(self.op_token("->")),
@@ -121,29 +128,34 @@ impl<'a> Iterator for Scanner<'a> {
             '>' if self.matched('=') => Some(self.op_token(">=")),
             '<' if self.matched('=') => Some(self.op_token("<=")),
             '!' if self.matched('=') => Some(self.op_token("!=")),
-            '!' => return Some(self.op_token("!")),
-            '>' => return Some(self.op_token(">")),
-            '<' => return Some(self.op_token("<")),
-            '+' => return Some(self.op_token("+")),
-            '-' => return Some(self.op_token("-")),
-            '*' => return Some(self.op_token("*")),
-            '/' => return Some(self.op_token("/")),
-            '=' => return Some(self.op_token("=")),
-            ':' => return Some(self.op_token(":")),
-            ';' => return Some(self.op_token(";")),
-            ',' => return Some(self.op_token(",")),
-            '(' => return Some(self.op_token("(")),
-            ')' => return Some(self.op_token(")")),
-            '[' => return Some(self.op_token("[")),
-            ']' => return Some(self.op_token("]")),
-            '{' => return Some(self.op_token("{")),
-            '}' => return Some(self.op_token("}")),
-            'λ' => return Some(self.op_token("λ")),
+            '!' => Some(self.op_token("!")),
+            '>' => Some(self.op_token(">")),
+            '<' => Some(self.op_token("<")),
+            '+' => Some(self.op_token("+")),
+            '-' => Some(self.op_token("-")),
+            '*' => Some(self.op_token("*")),
+            '/' => Some(self.op_token("/")),
+            '=' => Some(self.op_token("=")),
+            ':' => Some(self.op_token(":")),
+            ';' => Some(self.op_token(";")),
+            ',' => Some(self.op_token(",")),
+            '(' => Some(self.op_token("(")),
+            ')' => Some(self.op_token(")")),
+            '[' => Some(self.op_token("[")),
+            ']' => Some(self.op_token("]")),
+            '{' => Some(self.op_token("{")),
+            '}' => Some(self.op_token("}")),
+            'λ' => Some(self.op_token("λ")),
             ' ' | '\n' => {
                 self.reset_span();
                 self.next()
             }
-            _ => unimplemented!("{ch}"),
+            _ => Some((Token::Error(ch.into()), self.span())),
+        };
+        if let TokenDebug::True = self.token_debug {
+            let t = &token.clone().unwrap_or((Token::Eof, self.span()));
+            eprintln!("{t:?}");
         }
+        token
     }
 }

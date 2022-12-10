@@ -4,11 +4,22 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
+cb-lexer = { path = "./crates/cb-lexer"}
+cb-parse = { path = "./crates/cb-parse"}
+clap = { version = "4.0.29", features = ["cargo"] }
 
 [workspace]
 members = [
     "./crates/*"
 ]
+
+[[bin]]
+name = "main"
+path = "src/main.rs"
+
+[lib]
+name = "cflat"
+path = "src/lib.rs"
 
 [profile.release]
 opt-level = 'z'     # Optimize for size.
@@ -16,4 +27,3 @@ lto = true          # Enable Link Time Optimization
 codegen-units = 1   # Reduce number of codegen units to increase optimizations.
 panic = 'abort'     # Abort on panic
 strip = true        # Strip symbols from binary*
-
